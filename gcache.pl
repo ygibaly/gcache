@@ -290,7 +290,7 @@ push (@input_files,@extra_inputs);
 my $reference = get_cache_data_for_model($model_root,1);
 
 mkpath "$model_root/target/cache_data/$ENV{DUT}/";
-#store($reference,"$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
+store($reference,"$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
 
 my_print( "got cache data for local model - $model_root\n");
 
@@ -373,7 +373,9 @@ sub get_cache_data_for_model {
   my %result;
   my $ret_data;
   unless ($store) {
+    if (-e "$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache") {
      $ret_data = Storable::retrieve("$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
+    }
   }
 
 
