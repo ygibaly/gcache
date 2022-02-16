@@ -112,7 +112,7 @@ push (@skip_stages, @disabled_stages) unless ($ENV{GCACHE_IGNORE_DISABLED});
 my $stage_name = $opt{cfg};
 $stage_name =~ s/\.cfg$//;
 $stage_name =~ s/^.*\///;
-if ($stage_name ~~ @skip_stages || $stage_name =~ /intf|tr_report_tlm/  ) {
+if ($stage_name ~~ @skip_stages || $stage_name =~ /tr_report_tlm/  ) {
     my_print( "stage $stage_name is disabled from running gcache (configured from cfg)\n");
     exit 1;
 }
