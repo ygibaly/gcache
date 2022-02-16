@@ -703,7 +703,7 @@ sub extract_files {
     }
     my @tmp_inputs = `cat $f | grep -v "^#" |sed 's/\$MODEL_ROOT//'`;
     chomp @tmp_inputs;
-    for my $fiile (@tmp_inputs) {
+    for my $file (@tmp_inputs) {
 	    if (-e $file and $file !~ /^\/p\/hdk\/rtl\//) { 
     		push (@inputs,$file);
 		}
