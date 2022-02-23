@@ -72,7 +72,7 @@ our @inputs_files_files;
 our @extra_candidates;
 our $disable_local_cache;
 our $load_all_dutconfig_from_dut_list;
-our $dont_sort_inputs;
+our $dont_sort_inputs = "";
 
 
 if ((defined ($ENV{GK_DISABLE_GCACHE}) && $ENV{GK_DISABLE_GCACHE}) || (defined ($ENV{DISABLE_GCACHE}) && $ENV{DISABLE_GCACHE}) || (defined $ENV{GK_EVENT} && $ENV{GK_EVENT} =~ /release/) ) {
@@ -534,7 +534,7 @@ sub get_candidates {
 	splice (@releases,5);
 
     my @turnins;
-    if (defined $ENV{GK_BUNDLE_ID} ) {
+    if (defined $ENV{GK_EVENTTYPE} and $ENV{GK_EVENTTYPE} eq "turnin" ) {
         my $query = "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and (turnin.status in ('accepted','released','integrating')  OR (bundle.status='build_failed' AND turnin.stage='integrate'))   and turnin.area_deleted_attempts='0' and bundle_id=bundle.id";
         $query .= " and bundle.merge_start_time < (select merge_start_time from bundle where id='$ENV{GK_BUNDLE_ID}')";
         @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "$query"`; }
