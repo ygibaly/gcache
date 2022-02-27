@@ -64,6 +64,7 @@ our @disabled_stages;
 # STAGE CONFIG
 our @inputs;
 our @inputs_exclude;
+our @tools_exclude;
 our @outputs;
 our @outputs_exclude;
 our @tools;
@@ -103,6 +104,15 @@ GetOptions(\%opt,'cfg=s');
 die "--cfg <cfg_file> is required" unless ($opt{cfg});
 die "Can't read config file: $opt{cfg}\n" unless ( -e $opt{cfg});
 do "$opt{cfg}";
+
+
+my %exclude_keys_from_tool;
+
+for (@tools_exclude) {
+  my ($tool,$key) = split(":",$_);
+  push (@{$exclude_keys_from_tool{$tool}},$key);
+}
+
 
 
 print "dont sort inputs -> $dont_sort_inputs\n";
@@ -441,7 +451,14 @@ sub get_cache_data_for_model {
         $tool_info_hash = $ret_data->{tool}{$tool};
       }
       else {
-        $tool_info_hash = `export MODEL_ROOT=$model_root ; ToolConfig.pl show_tool_info $tool | sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
+        my $exclude_string = "";
+        if (defined $exclude_keys_from_tool{$tool}) {
+          print Dumper( @{$exclude_keys_from_tool{$tool}});
+          for my $key ( @{$exclude_keys_from_tool{$tool}}) {
+            $exclude_string.= " | grep -v $key ";
+          }
+        }
+        $tool_info_hash = `export MODEL_ROOT=$model_root ; ToolConfig.pl show_tool_info $tool  $exclude_string | sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
         chomp $tool_info_hash;
         $tool_info_hash =~ s/ .*//;
       }
@@ -530,14 +547,16 @@ sub get_candidates {
     chomp @releases;
     @releases = grep {-e $_ && -M $_ < $max_candidate_age} @releases;
 	@releases = reverse(@releases);
-	#limit to 5 releases
-	splice (@releases,5);
+	#limit to 2 releases
+	splice (@releases,2);
 
     my @turnins;
     if (defined $ENV{GK_EVENTTYPE} and $ENV{GK_EVENTTYPE} eq "turnin" ) {
         my $query = "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and (turnin.status in ('accepted','released','integrating')  OR (bundle.status='build_failed' AND turnin.stage='integrate'))   and turnin.area_deleted_attempts='0' and bundle_id=bundle.id";
         $query .= " and bundle.merge_start_time < (select merge_start_time from bundle where id='$ENV{GK_BUNDLE_ID}')";
-        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "$query"`; }
+        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "$query"`; 
+        @releases = (); # dont look at releaess for TI
+    }
     else {
         @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and turnin.status in ('accepted','released')  and turnin.area_deleted_attempts='0' and bundle_id=bundle.id"`;
     }
