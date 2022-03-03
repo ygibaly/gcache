@@ -759,7 +759,7 @@ sub my_print {
     my $str = shift;
     my @broken_str = split("\n", $str);
     my $t = strftime "%F %T", localtime time;
-    print "GCACHE $t: $_\n" for @broken_str;
+    print FH "GCACHE $t: $_\n" for @broken_str;
     return;
 }
 
