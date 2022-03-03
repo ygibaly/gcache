@@ -30,6 +30,7 @@ use File::Compare;
 use List::Util qw(min max);
 use List::MoreUtils qw(uniq);
 use Cwd;
+use POSIX;
 use Getopt::Long;
 use Data::Dumper;
 use threads;
@@ -748,7 +749,8 @@ sub sanitize {
 sub my_print {
     my $str = shift;
     my @broken_str = split("\n", $str);
-    print "GCACHE: $_\n" for @broken_str;
+    my $t = strftime "%F %T", localtime time;
+    print "GCACHE $t: $_\n" for @broken_str;
     return;
 }
 
