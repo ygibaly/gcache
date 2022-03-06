@@ -235,7 +235,7 @@ if ( ! $disable_local_cache and $stage_already_passed and ! $dont_run_local_cach
     my @local_cache_input_files = @input_files;
     push (@local_output_files, @parent_content);
     #parent_content
-    if (-e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed") {
+    if (-e "$ENV{MODEL_ROOT}/target/cache_data/${stage_name}_gcache_passed") {
         my_print( "stage already had a cache hit, checking for changes in input files\n");
         if (@tools) {
 	    my @tmp =  glob("$model_root/$ENV{CFGDIR}/*ToolData.pm");
@@ -401,8 +401,8 @@ sub get_cache_data_for_model {
   my %result;
   my $ret_data;
   unless ($store) {
-    if (-e "$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache") {
-     $ret_data = Storable::retrieve("$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
+    if (-e "$model_root/target/cache_data/${stage_name}_gcache") {
+     $ret_data = Storable::retrieve("$model_root/target/cache_data/${stage_name}_gcache");
     }
   }
 
