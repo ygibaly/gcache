@@ -26,6 +26,7 @@ use File::Temp  qw/ tempfile /;
 use File::Path;
 use File::Spec;
 use File::Compare;
+use File::Basename;
 use List::Util qw(min max);
 use List::MoreUtils qw(uniq);
 use Cwd;
@@ -34,7 +35,7 @@ use Getopt::Long;
 use Data::Dumper;
 use threads;
 use lib "$ENV{RTL_PROJ_BIN}/perllib";
-use ToolConfig;
+#use ToolConfig;
 
 #my $flowbee_path = &ToolConfig::ToolConfig_get_tool_path("rtltools/flowbee");
 #unshift @INC , $flowbee_path; #same as use lib, but at runtime                                                                                        
@@ -45,10 +46,6 @@ use Storable qw(store retrieve freeze thaw dclone);
 use vars qw(%DutConfig);
 
 
-BEGIN {
-  my $flowbee_path = &ToolConfig::ToolConfig_get_tool_path("rtltools/flowbee");
-  unshift @INC , $flowbee_path; #same as use lib, but at runtime                                                                                        
-}
 
 
 
@@ -88,14 +85,14 @@ my $fullpath = File::Spec->rel2abs($0);
 my $ProgramDir  = &dirname($fullpath);
 do "$ProgramDir/global.cfg" if -e "$ProgramDir/global.cfg";
 
-my $proj_cfg = ToolConfig::ToolConfig_get_tool_var("gcache","project_cfg");
-if ($proj_cfg && -e $proj_cfg) {
-	do $proj_cfg;
-}
-my $model_global_config = ToolConfig::ToolConfig_get_tool_var("gcache","config_file_dir")."global.cfg";
-if ($model_global_config && -e $model_global_config) {
-	do $model_global_config;
-}
+#my $proj_cfg = ToolConfig::ToolConfig_get_tool_var("gcache","project_cfg");
+#if ($proj_cfg && -e $proj_cfg) {
+#	do $proj_cfg;
+#}
+#my $model_global_config = ToolConfig::ToolConfig_get_tool_var("gcache","config_file_dir")."global.cfg";
+#if ($model_global_config && -e $model_global_config) {
+#	do $model_global_config;
+#}
 
 
 my %opt;
@@ -117,7 +114,7 @@ for (@tools_exclude) {
 
 
 print "dont sort inputs -> $dont_sort_inputs\n";
-my @skip_stages = ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
+my @skip_stages = ();# ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
 push (@skip_stages, @disabled_stages) unless ($ENV{GCACHE_IGNORE_DISABLED});
 
 my $stage_name = $opt{task_name};
