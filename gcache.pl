@@ -18,6 +18,7 @@
 #     REVISION: ---
 #===============================================================================
 
+
 use strict;
 use warnings;
 use File::Find ;
@@ -29,6 +30,7 @@ use File::Compare;
 use List::Util qw(min max);
 use List::MoreUtils qw(uniq);
 use Cwd;
+use POSIX;
 use Getopt::Long;
 use Data::Dumper;
 use threads;
@@ -63,6 +65,7 @@ our @disabled_stages;
 # STAGE CONFIG
 our @inputs;
 our @inputs_exclude;
+our @tools_exclude;
 our @outputs;
 our @outputs_exclude;
 our @tools;
@@ -71,14 +74,11 @@ our @inputs_files_files;
 our @extra_candidates;
 our $disable_local_cache;
 our $load_all_dutconfig_from_dut_list;
-our $use_git_to_filter_inputs;
-our $gk_stage;
+our $dont_sort_inputs = "";
 
-my %opt;
-GetOptions(\%opt,'cfg=s','always_pass' ,'logfile=s');
+
 if ((defined ($ENV{GK_DISABLE_GCACHE}) && $ENV{GK_DISABLE_GCACHE}) || (defined ($ENV{DISABLE_GCACHE}) && $ENV{DISABLE_GCACHE}) || (defined $ENV{GK_EVENT} && $ENV{GK_EVENT} =~ /release/) ) {
     my_print( "DISABLE_GCACHE is set - not runnig gcache\n");
-    exit 0 if ($opt{always_pass});
     exit 1;
 }
 
@@ -94,34 +94,37 @@ my $proj_cfg = ToolConfig::ToolConfig_get_tool_var("gcache","project_cfg");
 if ($proj_cfg && -e $proj_cfg) {
 	do $proj_cfg;
 }
-my $global_config_dir = ToolConfig::ToolConfig_get_tool_var("gcache","config_file_dir");
-if ($global_config_dir) {
-	
-my $model_global_config = $global_config_dir . "global.cfg";
+my $model_global_config = ToolConfig::ToolConfig_get_tool_var("gcache","config_file_dir")."global.cfg";
 if ($model_global_config && -e $model_global_config) {
 	do $model_global_config;
 }
-}
 
+
+my %opt;
+GetOptions(\%opt,'cfg=s');
 die "--cfg <cfg_file> is required" unless ($opt{cfg});
 die "Can't read config file: $opt{cfg}\n" unless ( -e $opt{cfg});
 do "$opt{cfg}";
 
-if ($opt{always_pass}) {
-	my_print("used always_pass flag - will return 0 exist status")
+
+my %exclude_keys_from_tool;
+
+for (@tools_exclude) {
+  my ($tool,$key) = split(":",$_);
+  push (@{$exclude_keys_from_tool{$tool}},$key);
 }
 
-my %model_to_tag;
 
+
+print "dont sort inputs -> $dont_sort_inputs\n";
 my @skip_stages = ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
 push (@skip_stages, @disabled_stages) unless ($ENV{GCACHE_IGNORE_DISABLED});
 
 my $stage_name = $opt{cfg};
 $stage_name =~ s/\.cfg$//;
 $stage_name =~ s/^.*\///;
-if ($stage_name ~~ @skip_stages || $stage_name =~ /intf|tr_report_tlm/  ) {
+if ($stage_name ~~ @skip_stages || $stage_name =~ /tr_report_tlm/  ) {
     my_print( "stage $stage_name is disabled from running gcache (configured from cfg)\n");
-    exit 0 if ($opt{always_pass});
     exit 1;
 }
 
@@ -265,78 +268,6 @@ die "Didn't find any Candidates for cache\n" unless (@candidates);
 my %input_per_candidate;
 my @extra_inputs;
 
-
-#TESTINGGGG
-@git_inputs = ();
-if ($use_git_to_filter_inputs) {
-#get the tags i know
-	my @tags = `cd $ENV{MODEL_ROOT} ; /usr/intel/bin/git tag`;
-	chomp @tags;
-	my %known_tags;
-	for (@tags) {
-		$known_tags{$_} = 1;  #easy lookup
-	}
-	my $last_ti = $tags[0];
-	my @changed_files = `cd $ENV{MODEL_ROOT} ; /usr/intel/bin/git diff --name-only $last_ti`;
-	chomp @changed_files;
-	for (@candidates) {
-		my $candidate = $_;
-		my_print("using git diff to filter inputs\n");
-		my $tag = $model_to_tag{$candidate};
-		unless ($tag) {
-			print "something went wrong with $candidate";
-		}
-		if ($known_tags{$tag}) {
-			#my_print("found tag $tag for model $candidate\n");
-			my @filtered_inputs = `cd $ENV{MODEL_ROOT} ; /usr/intel/bin/git diff --name-only $tag`;
-			unless ($?) {
-				chomp @filtered_inputs;
-				push (@git_inputs, @filtered_inputs);
-#				my_print("tag $tag: i have ". scalar (@filtered_inputs) ." filtered inputs compered to " .scalar(@input_files) ." non filtered inputs\n");
-#print join("\n",@filtered_inputs);
-#@current_input_files = @more_filtered_inputs;
-			}
-			else {
-				print "failed with $?\n"; 
-			}
-		}
-		else {
-			#its a newer model - get diffs from common ancestor
-			my @filtered_inputs = `cd $candidate ; /usr/intel/bin/git diff --name-only $last_ti`;
-			unless ($?) {
-				chomp @filtered_inputs;
-				push (@git_inputs, @filtered_inputs);
-#				my_print("tag $tag: i have ". scalar (@filtered_inputs) ." filtered inputs compered to " .scalar(@input_files) ." non filtered inputs\n");
-#print join("\n",@filtered_inputs);
-#@current_input_files = @more_filtered_inputs;
-			}
-			else {
-				print "failed with $?\n"; 
-			}
-			
-		
-		}
-	}
-				my @more_filtered_inputs;
-#now interect with original inputs
-				my %tmp;
-				for (@input_files){
-					$tmp{$_} =1;
-					if ($_ =~ /^target/) {
-						push (@more_filtered_inputs,$_);
-					}
-				}
-				for (@git_inputs) {
-					if ($tmp{$_}) {
-						push (@more_filtered_inputs,$_);
-					}
-				}
-}
-
-
-
-
-
 if (@parent_content) {
 #extract files...
 		for my $model (@candidates) {
@@ -369,8 +300,8 @@ push (@input_files,@extra_inputs);
 #my_print( join("\n",@input_files));
 my $reference = get_cache_data_for_model($model_root,1);
 
-#mkpath "$model_root/target/cache_data/$ENV{DUT}/";
-#store($reference,"$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
+mkpath "$model_root/target/cache_data/$ENV{DUT}/";
+store($reference,"$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
 
 my_print( "got cache data for local model - $model_root\n");
 
@@ -398,11 +329,9 @@ if ( ! @parent_content || ($selected_model && $input_per_candidate{$selected_mod
 	print $inputs_file_handler join("\n",@final_inputs);
 	close ($inputs_file_handler);
 }
-unless ($selected_model) {
-my_print( "Didn't find any matches for cache, running the stage\n" );
-    exit 0 if ($opt{always_pass});
-    exit 1;
-}
+
+die "Didn't find any matches for cache, running the stage\n" unless ($selected_model);
+
 ######
 $selected_model = Cwd::abs_path($selected_model);
 
@@ -419,16 +348,6 @@ if (@parent_output_content) {
         }
 }
 
-
-for (@outputs) {
-my @tmp = glob("$selected_model/$_");
-if (scalar @tmp == 0 || (scalar @tmp == 1 && !-e $tmp[0])) {
-  my_print("Output pattern $_ does not exist. Can not copy outputs. Failing.\n");
-  exit 1;
-
-}
-
-}
 my @output_files = find_files($selected_model,\@outputs,\@outputs_exclude); 
 
 exit 0 unless (@output_files); # if no output for some reason we are done
@@ -439,27 +358,14 @@ open ($output_fh , '>' ,$output_file_name);
 print $output_fh  join("\n",@output_files);
 
 #faster way to rsync
-my $datestring = localtime();
-
-my_print("starting rsync at $datestring\n");
-
 
 my $split_output_files = "/tmp/output_split_$$";
 `/usr/bin/split $output_file_name -l 3000 $split_output_files`;
-my $rsync_cmd = "ls $split_output_files* | xargs -P 20 -n 1 -Ixxx /usr/intel/bin/rsync -p --chmod=u+w --links --files-from=xxx $selected_model $model_root";
+my $rsync_cmd = "ls $split_output_files* | xargs -P 40 -n 1 -Ixxx /usr/intel/bin/rsync -p --chmod=u+w --links --files-from=xxx $selected_model $model_root";
 
 my_print( "running rsync command: $rsync_cmd");
 `$rsync_cmd`;
-if ($?) {
-my_print ("Syncing from model $selected_model failed with status $? - cleaning up\n");
-`cat $output_file_name | xargs rm -rf`;
-`rm $output_file_name`;
-    exit 0 if ($opt{always_pass});
-    exit 1;
-
-}
-
-
+die "Syncing from model $selected_model failed\n" if ($?);
 
 #copy_outputs($output_files_list_XXXXX);
 
@@ -474,6 +380,12 @@ sub get_cache_data_for_model {
   my $model_root = shift;
   my $store = shift; #should we return the result or just use it as referernce?
   my %result;
+  my $ret_data;
+  unless ($store) {
+    if (-e "$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache") {
+     $ret_data = Storable::retrieve("$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
+    }
+  }
 
 
   #DutConfig part
@@ -511,9 +423,6 @@ sub get_cache_data_for_model {
 
 #for dynamic inputs 
   my @current_input_files = @input_files;
-  for (@current_input_files) {
-	s/^\/+//
-	}
   if ($input_per_candidate{$model_root}) {
     my_print( "dynamic inputs for model $model_root\n");
     @current_input_files = uniq(@{$input_per_candidate{$model_root}});
@@ -521,36 +430,6 @@ sub get_cache_data_for_model {
     my_print( "\n");
     my_print( "end dynamic inputs\n");
   }
-
-   if ($use_git_to_filter_inputs && ! $store) {
-	my_print("using git diff to filter inputs\n");
-	my $tag = $model_to_tag{$model_root};
-unless ($tag) {
-	print "something went wrong with $model_root";	
-}
-	my_print("found tag $tag for model $model_root\n");
-	my @filtered_inputs = `/usr/intel/bin/git diff --name-only $tag`;
-	unless ($?) {
-	chomp @filtered_inputs;
-	my @more_filtered_inputs;
-	#now interect with original inputs
-	my %tmp;
-	for (@current_input_files){
-		$tmp{$_} =1;
-		if ($_ =~ /^target/) {
-			push (@more_filtered_inputs,$_);
-		}
-	}
-	for (@filtered_inputs) {
-		if ($tmp{$_}) {
-			push (@more_filtered_inputs,$_);
-		}
-	}
-	my_print("tag $tag: i have ". scalar (@more_filtered_inputs) ." filtered inputs compered to " .scalar(@current_input_files) ." non filtered inputs\n");
-	#print join("\n",@filtered_inputs);
-	@current_input_files = @more_filtered_inputs;
-	} 
-}
 
 
   # Ignoring model_root
@@ -566,9 +445,22 @@ unless ($tag) {
   }
 #tools
     for my $tool (@tools) {
-        my $tool_info_hash = `export MODEL_ROOT=$model_root ; ToolConfig.pl show_tool_info $tool | sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
+      my $tool_info_hash;
+      if ($ret_data->{tool}{$tool}) {
+        $tool_info_hash = $ret_data->{tool}{$tool};
+      }
+      else {
+        my $exclude_string = "";
+        if (defined $exclude_keys_from_tool{$tool}) {
+          print Dumper( @{$exclude_keys_from_tool{$tool}});
+          for my $key ( @{$exclude_keys_from_tool{$tool}}) {
+            $exclude_string.= " | grep -v $key ";
+          }
+        }
+        $tool_info_hash = `export MODEL_ROOT=$model_root ; ToolConfig.pl show_tool_info $tool  $exclude_string | sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
         chomp $tool_info_hash;
         $tool_info_hash =~ s/ .*//;
+      }
         if ($store) {
             $result{tool}{$tool} = $tool_info_hash;
        }
@@ -585,14 +477,20 @@ unless ($tag) {
       next if (-d $file);
       #my_print( "$file not exist\n") if (! -e $file);
       my $hash;
+      if ($ret_data->{$f}) {
+        $hash = $ret_data->{$f};
+      }
+      else {
       unless ( -e $file) {
         $hash = -1;
       }
       else {
-      my $sh1 = `cat $file | sed $ignore_model_root_command $ignore_patterns_command | sort |  /usr/bin/sha1sum`;
+	my $sort_part = $dont_sort_inputs ? "" : "| sort";
+      my $sh1 = `cat $file | sed $ignore_model_root_command $ignore_patterns_command $sort_part |  /usr/bin/sha1sum`;
       chomp $sh1;
         $sh1 =~ s/$model_root\///;
         ($hash,undef) = split(/\s+/,$sh1);
+      }
       }
         if ($store) {
             $result{$f} = $hash;
@@ -605,32 +503,37 @@ unless ($tag) {
 
 
     #cmdline part:
-   # my_print( "stage is $stage_name\n");
-   # my_print( "looking for $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz\n");
-   # my $scopes_file = ( sort {-M $a <=> -M $b} glob("$model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz") )[0];
-   # if ($scopes_file) {
-   # my_print( "scopes file: $scopes_file\n");
-   # my @lines = `zcat $scopes_file`;
+    my_print( "stage is $stage_name\n");
+    my_print( "looking for $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz\n");
+    my $scopes_file = ( sort {-M $a <=> -M $b} glob("$model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz") )[0];
+    if ($scopes_file) {
+    my_print( "scopes file: $scopes_file\n");
+    my @lines = `zcat $scopes_file`;
 
-   # my $str = join ("", @lines);
+    my $str = join ("", @lines);
 
-   # my $scopes  = eval $str;
-   # if ($?) {
-   #     my_print( $@);
-   # }
-   # my_print( join("\n", @{$scopes->{opts_ref}})); #check the sorting mechanism of simbuild
-   # my $cmdline = join(" ", @{$scopes->{opts_ref}});
-   # if ($store) {
-   #     $result{cmdline} = $cmdline;
-   # }
-   # else {
-   #     my_print( "cmdline mismatch in model $model_root\nlocal cmdline:\n$reference->{cmdline}\nreference cmdline:\n$cmdline\n") unless ($reference->{cmdline} eq $cmdline);
-   #   #  return 0 unless ($reference->{cmdline} eq $cmdline);
-   # }
-   # }
-   # else { #scopes file not exist 
-   #     my_print( "couldn't find scope file $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz - can't get stage cmdline\n");
-   # }
+    my $scopes  = eval $str;
+    if ($?) {
+     #   my_print( $@);
+    }
+#    my_print( join("\n", @{$scopes->{opts}})); #check the sorting mechanism of simbuild
+ #   my_print(Dumper(\%{$scopes->{opts}}));
+    my $cmdline = join(" ", Dumper(\%{$scopes->{opts}}));
+
+    my $rp_model_root = Cwd::realpath($model_root);
+    $cmdline =~ s/$rp_model_root//g;
+  #  print "cmdlineeeee $cmdline *******, $model_root $rp_model_root\n";
+    if ($store) {
+        $result{cmdline} = $cmdline;
+    }
+    else {
+        my_print( "cmdline mismatch in model $model_root\nlocal cmdline:\n$reference->{cmdline}\nreference cmdline:\n$cmdline\n") unless ($reference->{cmdline} eq $cmdline);
+        return 0 unless ($reference->{cmdline} eq $cmdline);
+    }
+    }
+    else { #scopes file not exist 
+        my_print( "couldn't find scope file $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz - can't get stage cmdline\n");
+    }
 
     #my $end = time;
     return \%result if $store;
@@ -644,47 +547,40 @@ sub get_candidates {
     my_print( "Candidates for cache:\n");
     my $cluster = shift;
     my $stepping = shift;
-    my @releases = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct symlink_path,model from releases where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}'  and branch='$ENV{branch_is}'  and status='released'"`; #glob("$ENV{RTLMODELS}/$cluster/*$stepping*"); #TODO - this is ugly and doesn't fit core
+    my @releases = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct symlink_path from releases where cluster='$ENV{cluster_is}' and branch='$ENV{branch_is}' and stepping='$ENV{STEPPING}'    and status='released'"`; #glob("$ENV{RTLMODELS}/$cluster/*$stepping*"); #TODO - this is ugly and doesn't fit core
     chomp @releases;
-	for (@releases) {
-	  my ($model,$tag) = split(/\s+/,$_);
-	  $model_to_tag{$model} = $tag;
-	  $_ = $model;
-	}
     @releases = grep {-e $_ && -M $_ < $max_candidate_age} @releases;
 	@releases = reverse(@releases);
-	splice(@releases,5);
+	#limit to 2 releases
+	splice (@releases,2);
 
     my @turnins;
-       if (defined $ENV{GK_EVENTTYPE} and $ENV{GK_EVENTTYPE} eq "turnin" ) {
-        my $query = "select distinct bundle.symlink_path,tag from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and (turnin.status in ('accepted','released', 'integrating')  OR (bundle.status='build_failed' AND turnin.stage='integrate')) and turnin.area_deleted_attempts='0' and bundle_id=bundle.id";
+    if (defined $ENV{GK_EVENTTYPE} and $ENV{GK_EVENTTYPE} eq "turnin" ) {
+        my $query = "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and (turnin.status in ('accepted','released','integrating')  OR (bundle.status='build_failed' AND turnin.stage='integrate'))   and turnin.area_deleted_attempts='0' and bundle_id=bundle.id";
         $query .= " and bundle.merge_start_time < (select merge_start_time from bundle where id='$ENV{GK_BUNDLE_ID}')";
-        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "$query"`; }
+        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "$query"`; 
+        @releases = (); # dont look at releaess for TI
+    }
     else {
-        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct bundle.symlink_path,tag from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and turnin.status in ('accepted','released')  and turnin.area_deleted_attempts='0' and bundle_id=bundle.id"`;
+        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and turnin.status in ('accepted','released')  and turnin.area_deleted_attempts='0' and bundle_id=bundle.id"`;
     }
     chomp @turnins;
-	for (@turnins) {
-	  my ($model,$tag) = split(/\s+/,$_);
-	  $model_to_tag{$model} = $tag;
-	  $_ = $model;
-	}
     @turnins  = reverse @turnins;
     @turnins = grep {-e $_ && -M $_ < $max_candidate_age && !/latest/} @turnins;
-    @turnins = uniq(@turnins);
 
 
     my @tmp_candidates =  (@extra_candidates,@releases,@turnins);
     my @candidates_final;
     for (@tmp_candidates) {
-	if (&stage_passed($_, $gk_stage)) {
+       if (-e "$_/target/cache_data/$ENV{DUT}/$stage_name" || 
+        -e  "$_/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed"  
+            ) {
         push (@candidates_final , $_);
-  #     }
-  #     else {
-  #      my_print( "candidate $_ doesn't appear to pass the stage $stage_name - skipping\n");
-  #     }
+       }
+       else {
+        my_print( "candidate $_ doesn't appear to pass the stage $stage_name - skipping\n");
+       }
     }
-}
 my_print (scalar(@candidates_final) . " candidates, max is $max_candidates\n");
     splice (@candidates_final, $max_candidates) if ($max_candidates < scalar(@candidates_final));
 	my_print(join("\n",@candidates_final));
@@ -692,30 +588,6 @@ my_print (scalar(@candidates_final) . " candidates, max is $max_candidates\n");
     return @candidates_final;
 }
 
-
-sub stage_passed {
-my $model = shift;
-my $gk_stage_name = shift;
-
-if (-e "$model/target/cache_data/$ENV{DUT}/${gk_stage_name}_gcache_passed") {
-return 1;
-}
-$DB::single = 1;
-our $Tasks_arr;
-
-
-do "$model/GATEKEEPER/tasks.pl";
-
-
-for (@{$Tasks_arr}) {
-        if ($_->{Stage} eq "$gk_stage_name" &&   $_->{STATUS} eq "Completed") {
-	return 1;
-}
-}
-
-return 0;
-
-}
 #inputs - 
 #   model root
 #   an array of paths
@@ -764,7 +636,7 @@ sub find_files {
   $model_name =~ s/.*\///;
   $_ =~ s/$model_root\/// for( @output );
   $_ =~ s/.*$model_name// for( @output );
-  $_ =~ s/.*integrate_bundle[0-9]*// for (@output); #hack
+  $_ =~ s/.*integrate_bundle[0-9]*\/// for (@output); #hack
   $_ =~ s/\/\//\// for( @output );
   $_ =~ s/\/$// for( @output );
   for (@output) {
@@ -818,7 +690,6 @@ sub remap_output {
         my_print( "working on $link\n");
         my $target = readlink ($link);
         my $rp_target = Cwd::realpath($target);
-	next unless ($rp_target);
         if ($rp_target =~ /$rp_old_model_root/) {
             #fix the link
             my_print( "fixing link to $target\n");
@@ -837,7 +708,7 @@ sub remap_output {
     #GIBALY - do i need realpath here as well?
     my_print( "running: cat $file_list | sed 's#^\\/##' |  egrep -v '\\.so\$' xargs -P 40 -n 1 sed -i -e 's#\\(/p\\|/nfs/\\([^/]\\)\\+/proj\\)/$part_old_model_root#$new_model_root#g' -e 's#$rp_old_model_root#$new_model_root#");
 
-    `cd $new_model_root ; cat $file_list | sed 's#^\\/##' | egrep -v '\\.so\$' | /usr/bin/xargs -P 40 -n 1 /usr/bin/sed -i -e 's#\\(/p\\|/nfs/\\([^/]\\)\\+/proj\\)/$part_old_model_root#$new_model_root#g' -e 's#$rp_old_model_root#$new_model_root#g' 2>/dev/null`;
+    `cd $new_model_root ; cat $file_list | sed 's#^\\/##' | egrep -v '\\.so\$' | /usr/bin/xargs -P 40 -n 1 /usr/bin/sed -i -e 's#\\(/p\\|/nfs/\\([^/]\\)\\+/proj\\)/$part_old_model_root#$new_model_root#g' -e 's#$rp_old_model_root#$new_model_root#g'`;
 }
 
 
@@ -849,13 +720,18 @@ sub extract_files {
     #this file can be expended:
     my @files = glob("$model_root/$file");
     for my $f (@files) {
-    if (! -e $f) {
+      if (! -e $f) {
         my_print( "content input file $f doesn't exist - ignoring\n");
         next;
-    }
-    my @tmp_inputs = `cat $f | grep -v "^#" |sed 's/\$MODEL_ROOT//'`;
-    chomp @tmp_inputs;
-    push (@inputs,@tmp_inputs);
+      }
+      my @tmp_inputs = `cat $f | grep -v "^#" |sed 's/\$MODEL_ROOT//'`;
+      chomp @tmp_inputs;
+      $_ =~ s/.*integrate_bundle[0-9]*\/// for (@tmp_inputs); #hack
+      for my $file (@tmp_inputs) {
+        if (-e "$model_root/$file" and $file !~ /^\/p\/hdk\/rtl\//) { 
+          push (@inputs,$file);
+      }
+      }
     }
     ##sanitize the inputs
     &sanitize($model_root,\@inputs);
@@ -875,19 +751,10 @@ sub sanitize {
 }
 
 sub my_print {
-if ($opt{logfile}) {
-open(FH, '>>', $opt{logfile}) or my_print("$!");
     my $str = shift;
     my @broken_str = split("\n", $str);
-    print FH "GCACHE: $_\n" for @broken_str;
-close(FH);
-}
-else {
-    my $str = shift;
-    my @broken_str = split("\n", $str);
-    print "GCACHE: $_\n" for @broken_str;
-
-}
+    my $t = strftime "%F %T", localtime time;
+    print "GCACHE $t: $_\n" for @broken_str;
     return;
 }
 
