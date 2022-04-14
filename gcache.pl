@@ -18,6 +18,7 @@
 #     REVISION: ---
 #===============================================================================
 
+
 use strict;
 use warnings;
 use File::Find ;
@@ -26,7 +27,6 @@ use File::Temp  qw/ tempfile /;
 use File::Path;
 use File::Spec;
 use File::Compare;
-use File::Basename;
 use List::Util qw(min max);
 use List::MoreUtils qw(uniq);
 use Cwd;
@@ -35,7 +35,7 @@ use Getopt::Long;
 use Data::Dumper;
 use threads;
 use lib "$ENV{RTL_PROJ_BIN}/perllib";
-#use ToolConfig;
+use ToolConfig;
 
 #my $flowbee_path = &ToolConfig::ToolConfig_get_tool_path("rtltools/flowbee");
 #unshift @INC , $flowbee_path; #same as use lib, but at runtime                                                                                        
@@ -46,8 +46,13 @@ use Storable qw(store retrieve freeze thaw dclone);
 use vars qw(%DutConfig);
 
 
+BEGIN {
+  my $flowbee_path = &ToolConfig::ToolConfig_get_tool_path("rtltools/flowbee");
+  unshift @INC , $flowbee_path; #same as use lib, but at runtime                                                                                        
+}
 
-
+#for cmdline and stuff
+use ScopedVars;
 
 # GLOBAL CONFIG
 our $max_candidates;
@@ -73,7 +78,7 @@ our $dont_sort_inputs = "";
 
 
 if ((defined ($ENV{GK_DISABLE_GCACHE}) && $ENV{GK_DISABLE_GCACHE}) || (defined ($ENV{DISABLE_GCACHE}) && $ENV{DISABLE_GCACHE}) || (defined $ENV{GK_EVENT} && $ENV{GK_EVENT} =~ /release/) ) {
-    print( "DISABLE_GCACHE is set - not runnig gcache\n");
+    my_print( "DISABLE_GCACHE is set - not runnig gcache\n");
     exit 1;
 }
 
@@ -85,20 +90,18 @@ my $fullpath = File::Spec->rel2abs($0);
 my $ProgramDir  = &dirname($fullpath);
 do "$ProgramDir/global.cfg" if -e "$ProgramDir/global.cfg";
 
-#my $proj_cfg = ToolConfig::ToolConfig_get_tool_var("gcache","project_cfg");
-#if ($proj_cfg && -e $proj_cfg) {
-#	do $proj_cfg;
-#}
-#my $model_global_config = ToolConfig::ToolConfig_get_tool_var("gcache","config_file_dir")."global.cfg";
-#if ($model_global_config && -e $model_global_config) {
-#	do $model_global_config;
-#}
+my $proj_cfg = ToolConfig::ToolConfig_get_tool_var("gcache","project_cfg");
+if ($proj_cfg && -e $proj_cfg) {
+	do $proj_cfg;
+}
+my $model_global_config = ToolConfig::ToolConfig_get_tool_var("gcache","config_file_dir")."global.cfg";
+if ($model_global_config && -e $model_global_config) {
+	do $model_global_config;
+}
 
 
 my %opt;
-GetOptions(\%opt,'task_name=s','task_cfg_file=s','task_log_file=s');
-$opt{task_log_file} =~ s/$ENV{MODEL_ROOT}//;
-$opt{cfg} =$opt{task_cfg_file};
+GetOptions(\%opt,'cfg=s');
 die "--cfg <cfg_file> is required" unless ($opt{cfg});
 die "Can't read config file: $opt{cfg}\n" unless ( -e $opt{cfg});
 do "$opt{cfg}";
@@ -114,19 +117,14 @@ for (@tools_exclude) {
 
 
 print "dont sort inputs -> $dont_sort_inputs\n";
-my @skip_stages = ();# ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
+my @skip_stages = ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
 push (@skip_stages, @disabled_stages) unless ($ENV{GCACHE_IGNORE_DISABLED});
 
-my $stage_name = $opt{task_name};
-$stage_name =~ s/^://;
-$stage_name =~ s/:/_/g;
-my $log_file = "$ENV{MODEL_ROOT}/target/cache_data/${stage_name}_gcache_$$.log";
-mkpath "$ENV{MODEL_ROOT}/target/cache_data/";
-open(FH, '>>', $log_file) or die $!;
-print "GCACHE: full gcache log file: $log_file\n";
-open STDERR, '>&FH';
-if ($stage_name ~~ @skip_stages ) {
-   print( "GCACHE: stage $stage_name is disabled from running gcache (configured from cfg)\n");
+my $stage_name = $opt{cfg};
+$stage_name =~ s/\.cfg$//;
+$stage_name =~ s/^.*\///;
+if ($stage_name ~~ @skip_stages || $stage_name =~ /tr_report_tlm/  ) {
+    my_print( "stage $stage_name is disabled from running gcache (configured from cfg)\n");
     exit 1;
 }
 
@@ -138,11 +136,11 @@ $model_root =~ s#^/nfs/^[/]+/proj#/nfs/site/proj#;
 
 my_print( "running caching script for model $model_root\n");
 
-#die "no DUT set, can't run without DUT\n" unless ($ENV{DUT});
+die "no DUT set, can't run without DUT\n" unless ($ENV{DUT});
 
-#if ($inputs_per_dut{$ENV{DUT}}) {
-#    push (@inputs, @{$inputs_per_dut{$ENV{DUT}}});
-#}
+if ($inputs_per_dut{$ENV{DUT}}) {
+    push (@inputs, @{$inputs_per_dut{$ENV{DUT}}});
+}
 
 my @content_inputs = map {s/content://r} grep {/^content:/} @inputs;
 
@@ -157,23 +155,23 @@ for (@parent_content) {
     }
 }
 
-#my @dutconfig_keys = map {s/dutconfig://r} grep {/^dutconfig:/} @inputs;
-#my @duts_list = ($ENV{DUT});
-#
-#if ($load_all_dutconfig_from_dut_list) {
-#  my @cfg_files = glob("$model_root/core/*/cfg/$ENV{DUT}.cfg");
-#  my $cfg_file = $cfg_files[0];
-#  my_print( "$cfg_file\n");
-#  unless (-e $cfg_file) {
-#    my_print( "didnt find file $model_root/core/*/cfg/$ENV{DUT}.cfg\n");
-#  }
-#  if (-e $cfg_file) {
-#    require $cfg_file;
-#    DutConfig->import;
-#    @duts_list = @{$DutConfig{duts_list}};
-#
-#  }
-#}
+my @dutconfig_keys = map {s/dutconfig://r} grep {/^dutconfig:/} @inputs;
+my @duts_list = ($ENV{DUT});
+
+if ($load_all_dutconfig_from_dut_list) {
+  my @cfg_files = glob("$model_root/core/*/cfg/$ENV{DUT}.cfg");
+  my $cfg_file = $cfg_files[0];
+  my_print( "$cfg_file\n");
+  unless (-e $cfg_file) {
+    my_print( "didnt find file $model_root/core/*/cfg/$ENV{DUT}.cfg\n");
+  }
+  if (-e $cfg_file) {
+    require $cfg_file;
+    DutConfig->import;
+    @duts_list = @{$DutConfig{duts_list}};
+
+  }
+}
 
 @inputs = grep {!/:/} @inputs;
 
@@ -215,33 +213,22 @@ my @local_output_files = find_files($model_root,\@outputs,\@outputs_exclude);
 #   2. Make sure all outputs exist
 #   3. Make sure all outputs where modified after last input was modified
 ################################################################################
-my $stage_already_passed  =0;
-if (-e "$ENV{MODEL_ROOT}/target/cache_data/${stage_name}_gcache_passed" ) {
-  $stage_already_passed = 1;
-}
-else {
-  my @log_files  = sort {-M $a <=> -M $b} glob("$ENV{MODEL_ROOT}/$opt{task_log_file}.*");
-  if (@log_files and $log_files[0]) {
-    if (`tail -20 $_/$log_files[0] | egrep -i 'Exit Status\\s*:\\s*0' `) {
-      $stage_already_passed = 1;
-    }
-  }
-}
 
-if ( ! $disable_local_cache and $stage_already_passed and ! $dont_run_local_cache ) { #stage ran, and finished successfully at that time
+
+if ( ! $disable_local_cache and (-e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/$stage_name" || -e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed") and ! $dont_run_local_cache ) { #stage ran, and finished successfully at that time
     my @local_cache_input_files = @input_files;
     push (@local_output_files, @parent_content);
     #parent_content
-    if (-e "$ENV{MODEL_ROOT}/target/cache_data/${stage_name}_gcache_passed") {
+    if (-e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/$stage_name") {
+        my_print( "stage already ran successfully, checking for changes in input files\n");
+    }
+    elsif (-e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed") {
         my_print( "stage already had a cache hit, checking for changes in input files\n");
         if (@tools) {
 	    my @tmp =  glob("$model_root/$ENV{CFGDIR}/*ToolData.pm");
             s/$model_root\/// for @tmp;
             push (@local_cache_input_files, @tmp);
         }
-    }
-    else {
-        my_print( "stage already ran successfully, checking for changes in input files\n");
     }
     my $last_input_modified = min ( map {-M "$model_root/$_"} @local_cache_input_files );
     my $last_input_modified_minutes = $last_input_modified*24*60;
@@ -252,7 +239,7 @@ if ( ! $disable_local_cache and $stage_already_passed and ! $dont_run_local_cach
     my $first_output_modified_minutes = $first_output_modified*24*60;
     my_print( "first output was midified $first_output_modified_minutes minutes ago\n");
     if ($last_input_modified > $first_output_modified) {
-        print( "GCACHE: no changes in input files, no need to run stage\n");
+        my_print( "no changes in input files, no need to run stage\n");
         exit 0;
     }
     else {
@@ -313,7 +300,8 @@ push (@input_files,@extra_inputs);
 #my_print( join("\n",@input_files));
 my $reference = get_cache_data_for_model($model_root,1);
 
-store($reference,"$model_root/target/cache_data/${stage_name}_gcache");
+mkpath "$model_root/target/cache_data/$ENV{DUT}/";
+store($reference,"$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
 
 my_print( "got cache data for local model - $model_root\n");
 
@@ -335,7 +323,7 @@ my_print( "looking for matches took $ttime seconds\n");
 my $inputs_file_handler;
 my @final_inputs;
 if ( ! @parent_content || ($selected_model && $input_per_candidate{$selected_model})) {
-	open ($inputs_file_handler,'>',"$model_root/target/cache_data/${stage_name}_input_files");
+	open ($inputs_file_handler,'>',"$model_root/target/cache_data/$ENV{DUT}/${stage_name}_input_files");
 	@final_inputs = @input_files;
 	@final_inputs = @{$input_per_candidate{$selected_model}} if ( @parent_content);
 	print $inputs_file_handler join("\n",@final_inputs);
@@ -360,14 +348,12 @@ if (@parent_output_content) {
         }
 }
 
-
-
 my @output_files = find_files($selected_model,\@outputs,\@outputs_exclude); 
 
 exit 0 unless (@output_files); # if no output for some reason we are done
 
 my $output_fh;
-my $output_file_name = "$model_root/target/cache_data/${stage_name}_output_files";
+my $output_file_name = "$model_root/target/cache_data/$ENV{DUT}/${stage_name}_output_files";
 open ($output_fh , '>' ,$output_file_name);
 print $output_fh  join("\n",@output_files);
 
@@ -384,10 +370,8 @@ die "Syncing from model $selected_model failed\n" if ($?);
 #copy_outputs($output_files_list_XXXXX);
 
 remap_output($selected_model,$model_root,$output_file_name);
-print( "GCACHE: Caching script passed\n");
-`touch $ENV{MODEL_ROOT}/target/cache_data/${stage_name}_gcache_passed`;
+my_print( "Caching script passed\n");
 
-close(FH);
 exit 0;
 
 
@@ -398,44 +382,44 @@ sub get_cache_data_for_model {
   my %result;
   my $ret_data;
   unless ($store) {
-    if (-e "$model_root/target/cache_data/${stage_name}_gcache") {
-     $ret_data = Storable::retrieve("$model_root/target/cache_data/${stage_name}_gcache");
+    if (-e "$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache") {
+     $ret_data = Storable::retrieve("$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
     }
   }
 
-#
-#  #DutConfig part
-#  if (@dutconfig_keys) {
-#    my_print( "in dutconfig\n");
-#    for my $dut (@duts_list) {
-#        my_print( "looking for $model_root/core/*/cfg/$dut.cfg\n");
-#    my @cfg_files = glob("$model_root/core/*/cfg/$dut.cfg");
-#    my $cfg_file = $cfg_files[0];
-#    my_print( "$cfg_file\n");
-#    unless (-e $cfg_file) {
-#        my_print( "didnt find file $model_root/core/*/cfg/$dut.cfg\n");
-#    }
-#    if (-e $cfg_file) {
-#        $ENV{MODEL_ROOT} = $model_root;
-#    # If this dut has a config file, then use it.
-#      require $cfg_file;
-#      DutConfig->import;
-#      for my $key (@dutconfig_keys) {
-#          my $value = Dumper($DutConfig{$key}); 
-#          my_print( "DUTCONFIG $model_root $dut $key $value\n");
-#          if ($store) {
-#              $result{DutConfig}{$dut}{$key} = $value;
-#          }
-#          else {
-#          my_print( "DutConfig mismatch in model $model_root\nlocal DutConfig->{$dut}->{$key}:\n$reference->{DutConfig}->{$dut}->{$key}\nreference DutConfig:\n$value\n") unless ($reference->{DutConfig}->{$dut}->{$key} eq $value);
-#          return 0 unless ($reference->{DutConfig}->{$dut}->{$key} eq $value);
-#          }
-#        }
-#    }
-#    $ENV{MODEL_ROOT} = $original_model_root;
-#  }
-#  }
-#
+
+  #DutConfig part
+  if (@dutconfig_keys) {
+    my_print( "in dutconfig\n");
+    for my $dut (@duts_list) {
+        my_print( "looking for $model_root/core/*/cfg/$dut.cfg\n");
+    my @cfg_files = glob("$model_root/core/*/cfg/$dut.cfg");
+    my $cfg_file = $cfg_files[0];
+    my_print( "$cfg_file\n");
+    unless (-e $cfg_file) {
+        my_print( "didnt find file $model_root/core/*/cfg/$dut.cfg\n");
+    }
+    if (-e $cfg_file) {
+        $ENV{MODEL_ROOT} = $model_root;
+    # If this dut has a config file, then use it.
+      require $cfg_file;
+      DutConfig->import;
+      for my $key (@dutconfig_keys) {
+          my $value = Dumper($DutConfig{$key}); 
+          my_print( "DUTCONFIG $model_root $dut $key $value\n");
+          if ($store) {
+              $result{DutConfig}{$dut}{$key} = $value;
+          }
+          else {
+          my_print( "DutConfig mismatch in model $model_root\nlocal DutConfig->{$dut}->{$key}:\n$reference->{DutConfig}->{$dut}->{$key}\nreference DutConfig:\n$value\n") unless ($reference->{DutConfig}->{$dut}->{$key} eq $value);
+          return 0 unless ($reference->{DutConfig}->{$dut}->{$key} eq $value);
+          }
+        }
+    }
+    $ENV{MODEL_ROOT} = $original_model_root;
+  }
+  }
+
 
 #for dynamic inputs 
   my @current_input_files = @input_files;
@@ -461,8 +445,8 @@ sub get_cache_data_for_model {
   }
 #tools
     for my $tool (@tools) {
-      my $tool_info_hash = "";
-       if ($ret_data->{tool}{$tool}) {
+      my $tool_info_hash;
+      if ($ret_data->{tool}{$tool}) {
         $tool_info_hash = $ret_data->{tool}{$tool};
       }
       else {
@@ -473,13 +457,7 @@ sub get_cache_data_for_model {
             $exclude_string.= " | grep -v $key ";
           }
         }
-
-      if ($ENV{PROJECT} eq "CTH") {
-         $tool_info_hash = `export WORKAREA=$model_root ; cth_query -tool $tool -resolve $exclude_string.| sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
-      }
-      else {
-         $tool_info_hash = `export MODEL_ROOT=$model_root ; ToolConfig.pl show_tool_info $tool $exclude_string. | sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
-      }
+        $tool_info_hash = `export MODEL_ROOT=$model_root ; ToolConfig.pl show_tool_info $tool  $exclude_string | sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
         chomp $tool_info_hash;
         $tool_info_hash =~ s/ .*//;
       }
@@ -525,16 +503,36 @@ sub get_cache_data_for_model {
 
 
     #cmdline part:
-    my $cmdline_file = $opt{task_name};
-    $cmdline_file =~ s/:/-/g;
-    my $cmdline = `cat target/gradle/logs/.${cmdline_file}_command`;
-    $cmdline =~ s/^cd.* gradle && //;
+    my_print( "stage is $stage_name\n");
+    my_print( "looking for $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz\n");
+    my $scopes_file = ( sort {-M $a <=> -M $b} glob("$model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz") )[0];
+    if ($scopes_file) {
+    my_print( "scopes file: $scopes_file\n");
+    my @lines = `zcat $scopes_file`;
+
+    my $str = join ("", @lines);
+
+    my $scopes  = eval $str;
+    if ($?) {
+     #   my_print( $@);
+    }
+#    my_print( join("\n", @{$scopes->{opts}})); #check the sorting mechanism of simbuild
+ #   my_print(Dumper(\%{$scopes->{opts}}));
+    my $cmdline = join(" ", Dumper(\%{$scopes->{opts}}));
+
+    my $rp_model_root = Cwd::realpath($model_root);
+    $cmdline =~ s/$rp_model_root//g;
+  #  print "cmdlineeeee $cmdline *******, $model_root $rp_model_root\n";
     if ($store) {
         $result{cmdline} = $cmdline;
     }
     else {
         my_print( "cmdline mismatch in model $model_root\nlocal cmdline:\n$reference->{cmdline}\nreference cmdline:\n$cmdline\n") unless ($reference->{cmdline} eq $cmdline);
         return 0 unless ($reference->{cmdline} eq $cmdline);
+    }
+    }
+    else { #scopes file not exist 
+        my_print( "couldn't find scope file $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz - can't get stage cmdline\n");
     }
 
     #my $end = time;
@@ -571,12 +569,21 @@ sub get_candidates {
     @turnins = grep {-e $_ && -M $_ < $max_candidate_age && !/latest/} @turnins;
 
 
+    my %area_slowness = get_area_slowness();
+
     my @tmp_candidates =  (@extra_candidates,@releases,@turnins);
     my @candidates_final;
     for (@tmp_candidates) {
-     # print "$_/$opt{task_log_file}\n";
-      if (`tail -20 $_/$opt{task_log_file} | egrep 'Exit Status\\s+:\\s+0' ` || 
-        -e  "$_/target/cache_data/${stage_name}_gcache_passed"  
+      my $area = `/usr/bin/df $_ --output=target | tail -1`;
+      chomp $area;
+      my $slowness = $area_slowness{$area};
+      if ($slowness && $slowness > 0.2) {
+        my_print("disk $area has reas latency of $slowness - will not use model $_");
+        next;
+      }
+
+       if (-e "$_/target/cache_data/$ENV{DUT}/$stage_name" || 
+        -e  "$_/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed"  
             ) {
         push (@candidates_final , $_);
        }
@@ -589,6 +596,34 @@ my_print (scalar(@candidates_final) . " candidates, max is $max_candidates\n");
 	my_print(join("\n",@candidates_final));
 	my_print("\n");
     return @candidates_final;
+}
+
+
+
+sub get_area_slowness {
+my @areas;
+my %area_to_fileserver;
+my @disk_data = `/usr/bin/df /nfs/site/proj/lnc/*{models,gk}* | sed 's/-.* /,/'`;
+chomp @disk_data;
+for (@disk_data) {
+  my ($fileserver,$area) = split(",",$_);
+  $area_to_fileserver{$area} = $fileserver;
+  push (@areas,$area);
+}
+
+my %fileserver_read_time;
+my @fileserver_data = `/usr/intel/bin/stodstatus cluster-nodes --field clusternode,MonitoredReadLatency --fo sc --timeout 3`;
+chomp @fileserver_data;
+for (@fileserver_data) {
+  my ($fileserver,$read_time) = split(",",$_);
+  $fileserver_read_time{$fileserver} = $read_time;
+}
+my %area_slowness;
+for (@areas) {
+  $area_slowness{$_} = $fileserver_read_time{$area_to_fileserver{$_}};
+ # print "$_,$fileserver_read_time{$area_to_fileserver{$_}}\n";
+}
+return %area_slowness;
 }
 
 #inputs - 
@@ -639,7 +674,7 @@ sub find_files {
   $model_name =~ s/.*\///;
   $_ =~ s/$model_root\/// for( @output );
   $_ =~ s/.*$model_name// for( @output );
-  $_ =~ s/.*integrate_bundle[0-9]*// for (@output); #hack
+  $_ =~ s/.*integrate_bundle[0-9]*\/// for (@output); #hack
   $_ =~ s/\/\//\// for( @output );
   $_ =~ s/\/$// for( @output );
   for (@output) {
@@ -723,17 +758,18 @@ sub extract_files {
     #this file can be expended:
     my @files = glob("$model_root/$file");
     for my $f (@files) {
-    if (! -e $f) {
+      if (! -e $f) {
         my_print( "content input file $f doesn't exist - ignoring\n");
         next;
-    }
-    my @tmp_inputs = `cat $f | grep -v "^#" |sed 's/\$MODEL_ROOT//'`;
-    chomp @tmp_inputs;
-    for my $file (@tmp_inputs) {
-	    if (-e $file and $file !~ /^\/p\/hdk\/rtl\//) { 
-    		push (@inputs,$file);
-		}
-    	}
+      }
+      my @tmp_inputs = `cat $f | grep -v "^#" |sed 's/\$MODEL_ROOT//'`;
+      chomp @tmp_inputs;
+      $_ =~ s/.*integrate_bundle[0-9]*\/// for (@tmp_inputs); #hack
+      for my $file (@tmp_inputs) {
+        if ((-e $file or -e "$model_root/$file") and $file !~ /^\/p\/hdk\/rtl\//) { 
+          push (@inputs,$file);
+      }
+      }
     }
     ##sanitize the inputs
     &sanitize($model_root,\@inputs);
@@ -756,7 +792,7 @@ sub my_print {
     my $str = shift;
     my @broken_str = split("\n", $str);
     my $t = strftime "%F %T", localtime time;
-    print FH "GCACHE $t: $_\n" for @broken_str;
+    print "GCACHE $t: $_\n" for @broken_str;
     return;
 }
 
