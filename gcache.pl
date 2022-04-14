@@ -762,8 +762,13 @@ sub extract_files {
         my_print( "content input file $f doesn't exist - ignoring\n");
         next;
       }
-      my @tmp_inputs = `cat $f | grep -v "^#" |sed 's/\$MODEL_ROOT//'`;
+      my @tmp_inputs = `cat $f | grep -v "^#" | grep -v -e '^\$'|sed 's/\$MODEL_ROOT//'`;
       chomp @tmp_inputs;
+      my $model_name = $model_root;
+      $model_name =~ s/\/$//;
+      $model_name =~ s/.*\///;
+      $_ =~ s/$model_root\/// for( @tmp_inputs );
+      $_ =~ s/.*$model_name// for( @tmp_inputs );
       $_ =~ s/.*integrate_bundle[0-9]*\/// for (@tmp_inputs); #hack
       for my $file (@tmp_inputs) {
         if ((-e $file or -e "$model_root/$file") and $file !~ /^\/p\/hdk\/rtl\//) { 
