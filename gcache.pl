@@ -23,11 +23,9 @@ use strict;
 use warnings;
 use File::Find ;
 use File::Find::Rule ;
-use File::Temp  qw/ tempfile /;
+use File::Temp  qw/ tempfile tempdir /;
 use File::Path;
 use File::Spec;
-use File::Spec;
-use File::Basename;
 use File::Compare;
 use List::Util qw(min max);
 use List::MoreUtils qw(uniq);
@@ -36,21 +34,25 @@ use POSIX;
 use Getopt::Long;
 use Data::Dumper;
 use threads;
-#use lib "$ENV{RTL_PROJ_BIN}/perllib";
-#use ToolConfig;
+use lib "$ENV{RTL_PROJ_BIN}/perllib";
+use ToolConfig;
 
 #my $flowbee_path = &ToolConfig::ToolConfig_get_tool_path("rtltools/flowbee");
 #unshift @INC , $flowbee_path; #same as use lib, but at runtime                                                                                        
 use Storable qw(store retrieve freeze thaw dclone);
 
-delete $ENV{CTH_INFRA_CONFIG};
-$ENV{CTH_INFRA_CONFIG}="";
+
 #for DutConfig
 use vars qw(%DutConfig);
 
 
+BEGIN {
+  my $flowbee_path = &ToolConfig::ToolConfig_get_tool_path("rtltools/flowbee");
+  unshift @INC , $flowbee_path; #same as use lib, but at runtime                                                                                        
+}
 
 #for cmdline and stuff
+use ScopedVars;
 
 # GLOBAL CONFIG
 our $max_candidates;
@@ -67,7 +69,6 @@ our @tools_exclude;
 our @outputs;
 our @outputs_exclude;
 our @tools;
-our @cth_tools;
 our %inputs_per_dut;
 our @inputs_files_files;
 our @extra_candidates;
@@ -89,6 +90,16 @@ my $fullpath = File::Spec->rel2abs($0);
 my $ProgramDir  = &dirname($fullpath);
 do "$ProgramDir/global.cfg" if -e "$ProgramDir/global.cfg";
 
+my $proj_cfg = ToolConfig::ToolConfig_get_tool_var("gcache","project_cfg");
+if ($proj_cfg && -e $proj_cfg) {
+	do $proj_cfg;
+}
+my $model_global_config = ToolConfig::ToolConfig_get_tool_var("gcache","config_file_dir")."global.cfg";
+if ($model_global_config && -e $model_global_config) {
+	do $model_global_config;
+}
+
+
 my %opt;
 GetOptions(\%opt,'cfg=s');
 die "--cfg <cfg_file> is required" unless ($opt{cfg});
@@ -105,17 +116,13 @@ for (@tools_exclude) {
 
 
 
-my @skip_stages; # = ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
+print "dont sort inputs -> $dont_sort_inputs\n";
+my @skip_stages = ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
 push (@skip_stages, @disabled_stages) unless ($ENV{GCACHE_IGNORE_DISABLED});
 
 my $stage_name = $opt{cfg};
 $stage_name =~ s/\.cfg$//;
 $stage_name =~ s/^.*\///;
-my $log_file = "$ENV{MODEL_ROOT}/output/cache_data/${stage_name}_gcache_$$.log";
-mkpath "$ENV{MODEL_ROOT}/output/cache_data/";
-open(FH, '>>', $log_file) or die $!;
-print "GCACHE: full gcache log file: $log_file\n";
-open STDERR, '>&FH';
 if ($stage_name ~~ @skip_stages || $stage_name =~ /tr_report_tlm/  ) {
     my_print( "stage $stage_name is disabled from running gcache (configured from cfg)\n");
     exit 1;
@@ -206,16 +213,16 @@ my @local_output_files = find_files($model_root,\@outputs,\@outputs_exclude);
 #   2. Make sure all outputs exist
 #   3. Make sure all outputs where modified after last input was modified
 ################################################################################
-$disable_local_cache=1; #haedcoded for now
 
-if ( ! $disable_local_cache and (-e "$ENV{MODEL_ROOT}/output/cache_data/$ENV{DUT}/$stage_name" || -e "$ENV{MODEL_ROOT}/output/cache_data/$ENV{DUT}/${stage_name}_gcache_passed") and ! $dont_run_local_cache ) { #stage ran, and finished successfully at that time
+
+if ( ! $disable_local_cache and (-e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/$stage_name" || -e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed") and ! $dont_run_local_cache ) { #stage ran, and finished successfully at that time
     my @local_cache_input_files = @input_files;
     push (@local_output_files, @parent_content);
     #parent_content
-    if (-e "$ENV{MODEL_ROOT}/output/cache_data/$ENV{DUT}/$stage_name") {
+    if (-e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/$stage_name") {
         my_print( "stage already ran successfully, checking for changes in input files\n");
     }
-    elsif (-e "$ENV{MODEL_ROOT}/output/cache_data/$ENV{DUT}/${stage_name}_gcache_passed") {
+    elsif (-e "$ENV{MODEL_ROOT}/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed") {
         my_print( "stage already had a cache hit, checking for changes in input files\n");
         if (@tools) {
 	    my @tmp =  glob("$model_root/$ENV{CFGDIR}/*ToolData.pm");
@@ -253,7 +260,7 @@ if ( ! $disable_local_cache and (-e "$ENV{MODEL_ROOT}/output/cache_data/$ENV{DUT
 my_print( "looking for matching models\n");
 
 
-my @candidates = get_candidates($ENV{GK_CLUSTER},$ENV{GK_STEPPING});
+my @candidates = get_candidates($ENV{cluster_is},$ENV{STEPPING});
 die "Didn't find any Candidates for cache\n" unless (@candidates);
 
 
@@ -293,8 +300,8 @@ push (@input_files,@extra_inputs);
 #my_print( join("\n",@input_files));
 my $reference = get_cache_data_for_model($model_root,1);
 
-mkpath "$model_root/output/cache_data/$ENV{DUT}/";
-store($reference,"$model_root/output/cache_data/$ENV{DUT}/${stage_name}_gcache");
+mkpath "$model_root/target/cache_data/$ENV{DUT}/";
+store($reference,"$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
 
 my_print( "got cache data for local model - $model_root\n");
 
@@ -316,15 +323,13 @@ my_print( "looking for matches took $ttime seconds\n");
 my $inputs_file_handler;
 my @final_inputs;
 if ( ! @parent_content || ($selected_model && $input_per_candidate{$selected_model})) {
-	open ($inputs_file_handler,'>',"$model_root/output/cache_data/$ENV{DUT}/${stage_name}_input_files");
+	open ($inputs_file_handler,'>',"$model_root/target/cache_data/$ENV{DUT}/${stage_name}_input_files");
 	@final_inputs = @input_files;
 	@final_inputs = @{$input_per_candidate{$selected_model}} if ( @parent_content);
 	print $inputs_file_handler join("\n",@final_inputs);
 	close ($inputs_file_handler);
 }
 
-
-print "Didn't find any matches for cache, running the stage\n" unless ($selected_model);
 die "Didn't find any matches for cache, running the stage\n" unless ($selected_model);
 
 ######
@@ -343,34 +348,38 @@ if (@parent_output_content) {
         }
 }
 
-
-
 my @output_files = find_files($selected_model,\@outputs,\@outputs_exclude); 
 
 exit 0 unless (@output_files); # if no output for some reason we are done
 
 my $output_fh;
-my $output_file_name = "$model_root/output/cache_data/$ENV{DUT}/${stage_name}_output_files";
+my $output_file_name = "$model_root/target/cache_data/$ENV{DUT}/${stage_name}_output_files";
 open ($output_fh , '>' ,$output_file_name);
 print $output_fh  join("\n",@output_files);
 
+
+my $tmp_dir =  tempdir("/tmp/gcache_tmp_XXXXXXX");
 #faster way to rsync
 
 my $split_output_files = "/tmp/output_split_$$";
 `/usr/bin/split $output_file_name -l 3000 $split_output_files`;
-my $rsync_cmd = "ls $split_output_files* | xargs -P 40 -n 1 -Ixxx /usr/intel/bin/rsync -p --chmod=u+w --links --files-from=xxx $selected_model $model_root";
+my $rsync_cmd = "ls $split_output_files* | xargs -P 40 -n 1 -Ixxx /usr/intel/bin/rsync -p --chmod=u+w --links --files-from=xxx $selected_model $tmp_dir";
 
-my_print( "running rsync command: $rsync_cmd");
+my_print( "running rsync to /tmp: $rsync_cmd");
 `$rsync_cmd`;
 die "Syncing from model $selected_model failed\n" if ($?);
 
 #copy_outputs($output_files_list_XXXXX);
 
-remap_output($selected_model,$model_root,$output_file_name);
-print( "GCACHE: Caching script passed\n");
-`touch $ENV{MODEL_ROOT}/outputt/cache_data/$ENV{DUT}/${stage_name}_gcache_passed`;
+remap_output($selected_model,$model_root,$output_file_name,$tmp_dir);
 
-close(FH);
+ $rsync_cmd = "ls $split_output_files* | xargs -P 40 -n 1 -Ixxx /usr/intel/bin/rsync -p --chmod=u+w --links --files-from=xxx $tmp_dir $model_root";
+my_print( "running rsync from /tmp: $rsync_cmd");
+`$rsync_cmd`;
+die "Syncing from model $selected_model failed\n" if ($?);
+`rm -rf $tmp_dir`;
+my_print( "Caching script passed\n");
+
 exit 0;
 
 
@@ -381,8 +390,8 @@ sub get_cache_data_for_model {
   my %result;
   my $ret_data;
   unless ($store) {
-    if (-e "$model_root/output/cache_data/$ENV{DUT}/${stage_name}_gcache") {
-     $ret_data = Storable::retrieve("$model_root/output/cache_data/$ENV{DUT}/${stage_name}_gcache");
+    if (-e "$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache") {
+     $ret_data = Storable::retrieve("$model_root/target/cache_data/$ENV{DUT}/${stage_name}_gcache");
     }
   }
 
@@ -457,8 +466,6 @@ sub get_cache_data_for_model {
           }
         }
         $tool_info_hash = `export MODEL_ROOT=$model_root ; ToolConfig.pl show_tool_info $tool  $exclude_string | sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
-	#     $tool_info_hash = `export WORKAREA=$model_root ; cth_query -tool $tool -resolve $exclude_string.| sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
-
         chomp $tool_info_hash;
         $tool_info_hash =~ s/ .*//;
       }
@@ -470,34 +477,6 @@ sub get_cache_data_for_model {
             return 0  unless ($reference->{tool}{$tool} eq $tool_info_hash); #...
        }
     }
-
-   for my $tool (@cth_tools) {
-      my $tool_info_hash = "";
-       if ($ret_data->{tool}{$tool}) {
-        $tool_info_hash = $ret_data->{tool}{$tool};
-      }
-      else {
-        my $exclude_string = "";
-        if (defined $exclude_keys_from_tool{$tool}) {
-          print Dumper( @{$exclude_keys_from_tool{$tool}});
-          for my $key ( @{$exclude_keys_from_tool{$tool}}) {
-            $exclude_string.= " | grep -v $key ";
-          }
-        }
-
-         $tool_info_hash = `export WORKAREA=$model_root ; cth_query -tool $tool -resolve $exclude_string.| sed  $ignore_model_root_command  | /usr/bin/sha1sum`;
-        chomp $tool_info_hash;
-        $tool_info_hash =~ s/ .*//;
-      }
-        if ($store) {
-            $result{tool}{$tool} = $tool_info_hash;
-       }
-       else {
-            my_print( "tool mismatch in model $model_root Tool: $tool hash: $tool_info_hash Local tool hash: $reference->{tool}{$tool}\n")  unless ($reference->{tool}{$tool} eq $tool_info_hash); #...
-            return 0  unless ($reference->{tool}{$tool} eq $tool_info_hash); #...
-       }
-    }
-
 
 
   my_print( "$model_root\n");
@@ -531,33 +510,38 @@ sub get_cache_data_for_model {
     }
 
 
-   # #cmdline part:
-   # my_print( "stage is $stage_name\n");
-   # my_print( "looking for $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz\n");
-   # my $scopes_file = ( sort {-M $a <=> -M $b} glob("$model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz") )[0];
-   # if ($scopes_file) {
-   # my_print( "scopes file: $scopes_file\n");
-   # my @lines = `zcat $scopes_file`;
+    #cmdline part:
+    my_print( "stage is $stage_name\n");
+    my_print( "looking for $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz\n");
+    my $scopes_file = ( sort {-M $a <=> -M $b} glob("$model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz") )[0];
+    if ($scopes_file) {
+    my_print( "scopes file: $scopes_file\n");
+    my @lines = `zcat $scopes_file`;
 
-   # my $str = join ("", @lines);
+    my $str = join ("", @lines);
 
-   # my $scopes  = eval $str;
-   # if ($?) {
-   #     my_print( $@);
-   # }
-   # my_print( join("\n", @{$scopes->{opts_ref}})); #check the sorting mechanism of simbuild
-   # my $cmdline = join(" ", @{$scopes->{opts_ref}});
-   # if ($store) {
-   #     $result{cmdline} = $cmdline;
-   # }
-   # else {
-   #     my_print( "cmdline mismatch in model $model_root\nlocal cmdline:\n$reference->{cmdline}\nreference cmdline:\n$cmdline\n") unless ($reference->{cmdline} eq $cmdline);
-   #   #  return 0 unless ($reference->{cmdline} eq $cmdline);
-   # }
-   # }
-   # else { #scopes file not exist 
-   #     my_print( "couldn't find scope file $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz - can't get stage cmdline\n");
-   # }
+    my $scopes  = eval $str;
+    if ($?) {
+     #   my_print( $@);
+    }
+#    my_print( join("\n", @{$scopes->{opts}})); #check the sorting mechanism of simbuild
+ #   my_print(Dumper(\%{$scopes->{opts}}));
+    my $cmdline = join(" ", Dumper(\%{$scopes->{opts}}));
+
+    my $rp_model_root = Cwd::realpath($model_root);
+    $cmdline =~ s/$rp_model_root//g;
+  #  print "cmdlineeeee $cmdline *******, $model_root $rp_model_root\n";
+    if ($store) {
+        $result{cmdline} = $cmdline;
+    }
+    else {
+        my_print( "cmdline mismatch in model $model_root\nlocal cmdline:\n$reference->{cmdline}\nreference cmdline:\n$cmdline\n") unless ($reference->{cmdline} eq $cmdline);
+        return 0 unless ($reference->{cmdline} eq $cmdline);
+    }
+    }
+    else { #scopes file not exist 
+        my_print( "couldn't find scope file $model_root/target/flow_data/*$ENV{DUT}*/*$stage_name*gz - can't get stage cmdline\n");
+    }
 
     #my $end = time;
     return \%result if $store;
@@ -571,44 +555,83 @@ sub get_candidates {
     my_print( "Candidates for cache:\n");
     my $cluster = shift;
     my $stepping = shift;
-    my @releases = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct symlink_path from releases where cluster='$ENV{GK_CLUSTER}' and branch='$ENV{GK_BRANCH}' and stepping='$ENV{GK_STEPPING}'    and status='released'"`; #glob("$ENV{RTLMODELS}/$cluster/*$stepping*"); #TODO - this is ugly and doesn't fit core
+    my @releases = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct symlink_path from releases where cluster='$ENV{cluster_is}' and branch='$ENV{branch_is}' and stepping='$ENV{STEPPING}'    and status='released'"`; #glob("$ENV{RTLMODELS}/$cluster/*$stepping*"); #TODO - this is ugly and doesn't fit core
     chomp @releases;
     @releases = grep {-e $_ && -M $_ < $max_candidate_age} @releases;
 	@releases = reverse(@releases);
 	#limit to 2 releases
-	splice (@releases,5);
+	splice (@releases,2);
 
     my @turnins;
-   # if (defined $ENV{GK_EVENTTYPE} and $ENV{GK_EVENTTYPE} eq "turnin" ) {
-   #     my $query = "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{GK_CLUSTER}' and stepping='$ENV{GK_STEPPING}' and branch='$ENV{GK_BRANCH}' and (turnin.status in ('accepted','released','integrating')  OR (bundle.status='build_failed' AND turnin.stage='integrate'))   and turnin.area_deleted_attempts='0' and bundle_id=bundle.id";
-   #     $query .= " and bundle.merge_start_time < (select merge_start_time from bundle where id='$ENV{GK_BUNDLE_ID}')";
-   #     @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "$query"`; 
-   #     @releases = (); # dont look at releaess for TI
-   # }
-   # else {
-        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{GK_CLUSTER}' and stepping='$ENV{GK_STEPPING}' and branch='$ENV{GK_BRANCH}' and turnin.status in ('accepted','released')  and turnin.area_deleted_attempts='0' and bundle_id=bundle.id"`;
-   # }
+    if (defined $ENV{GK_EVENTTYPE} and $ENV{GK_EVENTTYPE} eq "turnin" ) {
+        my $query = "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and (turnin.status in ('accepted','released','integrating')  OR (bundle.status='build_failed' AND turnin.stage='integrate'))   and turnin.area_deleted_attempts='0' and bundle_id=bundle.id";
+        $query .= " and bundle.merge_start_time < (select merge_start_time from bundle where id='$ENV{GK_BUNDLE_ID}')";
+        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "$query"`; 
+        @releases = (); # dont look at releaess for TI
+    }
+    else {
+        @turnins = `mysql --defaults-file=$ENV{GK_CONFIG_DIR}/db_reader_credentials.cnf -r -B -N -e "select distinct bundle.symlink_path from turnin,bundle where cluster='$ENV{cluster_is}' and stepping='$ENV{STEPPING}' and branch='$ENV{branch_is}' and turnin.status in ('accepted','released')  and turnin.area_deleted_attempts='0' and bundle_id=bundle.id"`;
+    }
     chomp @turnins;
     @turnins  = reverse @turnins;
     @turnins = grep {-e $_ && -M $_ < $max_candidate_age && !/latest/} @turnins;
 
 
+    my %area_slowness = get_area_slowness();
+
     my @tmp_candidates =  (@extra_candidates,@releases,@turnins);
     my @candidates_final;
     for (@tmp_candidates) {
-    #   if (-e "$_/target/cache_data/$ENV{DUT}/$stage_name" || 
-    #    -e  "$_/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed"  
-    #        ) {
+      my $area = `/usr/bin/df $_ --output=target | tail -1`;
+      chomp $area;
+      my $slowness = $area_slowness{$area};
+      if ($slowness && $slowness > 0.2) {
+        my_print("disk $area has reas latency of $slowness - will not use model $_");
+        next;
+      }
+
+       if (-e "$_/target/cache_data/$ENV{DUT}/$stage_name" || 
+        -e  "$_/target/cache_data/$ENV{DUT}/${stage_name}_gcache_passed"  
+            ) {
         push (@candidates_final , $_);
-    #   }
-    #   else {
-    #    my_print( "candidate $_ doesn't appear to pass the stage $stage_name - skipping\n");
+       }
+       else {
+        my_print( "candidate $_ doesn't appear to pass the stage $stage_name - skipping\n");
+       }
     }
 my_print (scalar(@candidates_final) . " candidates, max is $max_candidates\n");
     splice (@candidates_final, $max_candidates) if ($max_candidates < scalar(@candidates_final));
 	my_print(join("\n",@candidates_final));
 	my_print("\n");
     return @candidates_final;
+}
+
+
+
+sub get_area_slowness {
+my @areas;
+my %area_to_fileserver;
+my @disk_data = `/usr/bin/df /nfs/site/proj/lnc/*{models,gk}* | sed 's/-.* /,/'`;
+chomp @disk_data;
+for (@disk_data) {
+  my ($fileserver,$area) = split(",",$_);
+  $area_to_fileserver{$area} = $fileserver;
+  push (@areas,$area);
+}
+
+my %fileserver_read_time;
+my @fileserver_data = `/usr/intel/bin/stodstatus cluster-nodes --field clusternode,MonitoredReadLatency --fo sc --timeout 3`;
+chomp @fileserver_data;
+for (@fileserver_data) {
+  my ($fileserver,$read_time) = split(",",$_);
+  $fileserver_read_time{$fileserver} = $read_time;
+}
+my %area_slowness;
+for (@areas) {
+  $area_slowness{$_} = $fileserver_read_time{$area_to_fileserver{$_}};
+ # print "$_,$fileserver_read_time{$area_to_fileserver{$_}}\n";
+}
+return %area_slowness;
 }
 
 #inputs - 
@@ -659,7 +682,7 @@ sub find_files {
   $model_name =~ s/.*\///;
   $_ =~ s/$model_root\/// for( @output );
   $_ =~ s/.*$model_name// for( @output );
-  $_ =~ s/.*integrate_bundle[0-9]*// for (@output); #hack
+  $_ =~ s/.*integrate_bundle[0-9]*\/// for (@output); #hack
   $_ =~ s/\/\//\// for( @output );
   $_ =~ s/\/$// for( @output );
   for (@output) {
@@ -697,6 +720,7 @@ sub remap_output {
     my $old_model_root = shift;
     my $new_model_root = shift;
     my $file_list = shift; # a file containing all the output files
+    my $tmp_dir = shift; # we are doing the operations on /tmp
     my $part_old_model_root = $old_model_root;
     $part_old_model_root =~ s/^\/p//;
     $part_old_model_root =~ s/^\/nfs\/[^\/]+\/proj\///;
@@ -707,9 +731,9 @@ sub remap_output {
     my @files = `cat $file_list`;
     chomp @files;
     my_print( "files are " . join("\n",@files));
-    my @links = grep {-l "$new_model_root/$_"} @files;
+    my @links = grep {-l "$tmp_dir/$_"} @files;
     for my $link (@links) {
-        $link = "$new_model_root/$link";
+        $link = "$tmp_dir/$link";
         my_print( "working on $link\n");
         my $target = readlink ($link);
         my $rp_target = Cwd::realpath($target);
@@ -731,7 +755,7 @@ sub remap_output {
     #GIBALY - do i need realpath here as well?
     my_print( "running: cat $file_list | sed 's#^\\/##' |  egrep -v '\\.so\$' xargs -P 40 -n 1 sed -i -e 's#\\(/p\\|/nfs/\\([^/]\\)\\+/proj\\)/$part_old_model_root#$new_model_root#g' -e 's#$rp_old_model_root#$new_model_root#");
 
-    `cd $new_model_root ; cat $file_list | sed 's#^\\/##' | egrep -v '\\.so\$' | /usr/bin/xargs -P 40 -n 1 /usr/bin/sed -i -e 's#\\(/p\\|/nfs/\\([^/]\\)\\+/proj\\)/$part_old_model_root#$new_model_root#g' -e 's#$rp_old_model_root#$new_model_root#g'`;
+    `cd $tmp_dir ; cat $file_list | sed 's#^\\/##' | egrep -v '\\.so\$' | /usr/bin/xargs -P 40 -n 1 /usr/bin/sed -i -e 's#\\(/p\\|/nfs/\\([^/]\\)\\+/proj\\)/$part_old_model_root#$new_model_root#g' -e 's#$rp_old_model_root#$new_model_root#g'`;
 }
 
 
@@ -743,17 +767,23 @@ sub extract_files {
     #this file can be expended:
     my @files = glob("$model_root/$file");
     for my $f (@files) {
-    if (! -e $f) {
+      if (! -e $f) {
         my_print( "content input file $f doesn't exist - ignoring\n");
         next;
-    }
-    my @tmp_inputs = `cat $f | grep -v "^#" |sed 's/\$MODEL_ROOT//'`;
-    chomp @tmp_inputs;
-    for my $file (@tmp_inputs) {
-	    if (-e $file and $file !~ /^\/p\/hdk\/rtl\//) { 
-    		push (@inputs,$file);
-		}
-    	}
+      }
+      my @tmp_inputs = `cat $f | grep -v "^#" | grep -v -e '^\$'|sed 's/\$MODEL_ROOT//'`;
+      chomp @tmp_inputs;
+      my $model_name = $model_root;
+      $model_name =~ s/\/$//;
+      $model_name =~ s/.*\///;
+      $_ =~ s/$model_root\/// for( @tmp_inputs );
+      $_ =~ s/.*$model_name// for( @tmp_inputs );
+      $_ =~ s/.*integrate_bundle[0-9]*\/// for (@tmp_inputs); #hack
+      for my $file (@tmp_inputs) {
+        if ((-e $file or -e "$model_root/$file") and $file !~ /^\/p\/hdk\/rtl\//) { 
+          push (@inputs,$file);
+      }
+      }
     }
     ##sanitize the inputs
     &sanitize($model_root,\@inputs);
@@ -776,7 +806,7 @@ sub my_print {
     my $str = shift;
     my @broken_str = split("\n", $str);
     my $t = strftime "%F %T", localtime time;
-    print FH "GCACHE $t: $_\n" for @broken_str;
+    print "GCACHE $t: $_\n" for @broken_str;
     return;
 }
 
