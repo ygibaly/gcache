@@ -75,6 +75,7 @@ our @extra_candidates;
 our $disable_local_cache;
 our $load_all_dutconfig_from_dut_list;
 our $dont_sort_inputs = "";
+our $stage_name;
 
 
 if ((defined ($ENV{GK_DISABLE_GCACHE}) && $ENV{GK_DISABLE_GCACHE}) || (defined ($ENV{DISABLE_GCACHE}) && $ENV{DISABLE_GCACHE}) || (defined $ENV{GK_EVENT} && $ENV{GK_EVENT} =~ /release/) ) {
@@ -101,7 +102,19 @@ if ($model_global_config && -e $model_global_config) {
 
 
 my %opt;
-GetOptions(\%opt,'cfg=s');
+GetOptions(\%opt,'cfg=s' ,'env=s');
+
+if ($opt{env}) {
+  my_print("setting envs $opt{env}");
+  my @envs = split(",",$opt{env});
+  for (@envs) {
+    my ($key,$value) = split("=",$_);
+    my_print("setting env $key $value");
+    $ENV{$key}=$value;
+  }
+}
+
+
 die "--cfg <cfg_file> is required" unless ($opt{cfg});
 die "Can't read config file: $opt{cfg}\n" unless ( -e $opt{cfg});
 do "$opt{cfg}";
@@ -120,9 +133,11 @@ print "dont sort inputs -> $dont_sort_inputs\n";
 my @skip_stages = ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
 push (@skip_stages, @disabled_stages) unless ($ENV{GCACHE_IGNORE_DISABLED});
 
-my $stage_name = $opt{cfg};
-$stage_name =~ s/\.cfg$//;
-$stage_name =~ s/^.*\///;
+unless ($stage_name) {
+  $stage_name = $opt{cfg};
+  $stage_name =~ s/\.cfg$//;
+  $stage_name =~ s/^.*\///;
+}
 if ($stage_name ~~ @skip_stages || $stage_name =~ /tr_report_tlm/  ) {
     my_print( "stage $stage_name is disabled from running gcache (configured from cfg)\n");
     exit 1;
@@ -153,6 +168,11 @@ for (@parent_content) {
     unless (-e "$model_root/$_") {
         $dont_run_local_cache = 1;
     }
+}
+
+my @parent_content_function = map {s/function://r} grep {/^function:/} @inputs;
+if (@parent_content_function) {
+  $dont_run_local_cache = 1;
 }
 
 my @dutconfig_keys = map {s/dutconfig://r} grep {/^dutconfig:/} @inputs;
@@ -286,6 +306,28 @@ if (@parent_content) {
 				push (@extra_inputs,@tmp_input);
 		}
 }
+
+if (@parent_content_function) {
+		for my $model (@candidates) {
+				my @tmp_input;
+
+				my @parent_input;
+				for my $function (@parent_content_function) {
+                  no strict 'refs';
+                  my @files = $function->($model);
+                    &sanitize($model,\@files);
+                    push (@parent_input,@files);
+				}
+				@tmp_input = find_files($model, \@parent_input, \@inputs_exclude);
+				@{$input_per_candidate{$model}} = @tmp_input;
+				push (@{$input_per_candidate{$model}},@input_files); #adding the non parent-specific inputs
+				push (@extra_inputs,@tmp_input);
+        }
+}
+
+
+
+
 
 push (@input_files,@extra_inputs);
 @input_files = uniq (@input_files);
