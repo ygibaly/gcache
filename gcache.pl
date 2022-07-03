@@ -102,7 +102,7 @@ if ($model_global_config && -e $model_global_config) {
 
 
 my %opt;
-GetOptions(\%opt,'cfg=s' ,'env=s');
+GetOptions(\%opt,'stage_name=s', 'cfg=s' ,'env=s');
 
 if ($opt{env}) {
   my_print("setting envs $opt{env}");
@@ -132,7 +132,9 @@ for (@tools_exclude) {
 print "dont sort inputs -> $dont_sort_inputs\n";
 my @skip_stages = ToolConfig::ToolConfig_get_tool_var("gcache","force_disable_stages");
 push (@skip_stages, @disabled_stages) unless ($ENV{GCACHE_IGNORE_DISABLED});
-
+if ($opt{stage_name}) {
+  $stage_name = $opt{stage_name};
+}
 unless ($stage_name) {
   $stage_name = $opt{cfg};
   $stage_name =~ s/\.cfg$//;
